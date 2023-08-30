@@ -378,8 +378,6 @@ void *mm_malloc(size_t size)
         else {
             update_size(newhdr, newsize);
             set_free(newhdr, 0);
-            newhdr->next = NULL; // At the end of the heap. Has no free blocks after it
-            newhdr->prev = hdr;
             return header_to_payload(newhdr);
         }
 
@@ -411,7 +409,7 @@ void *mm_realloc(void *ptr, size_t newSize)
     void *newPayload;
     size_t payloadSize;
     size_t copySize;
-    
+    size_t allocSize = payload_sz_to_block_sz(newSize);
     /*
      * Handle corner cases in the specification.
      */
@@ -423,8 +421,23 @@ void *mm_realloc(void *ptr, size_t newSize)
     else if (ptr == NULL) {
         return mm_malloc(newSize);
     }
-
+    
     payloadSize = block_sz_to_payload_sz(get_size_hdr(oldhdr));
+    if (newSize <= payloadSize) {
+        split(oldhdr, payload_sz_to_block_sz(newSize));
+        return header_to_payload(oldhdr);
+    }
+
+    if (next(oldhdr) != NULL && get_free(next(oldhdr))) {
+        header *nxt = next(oldhdr);
+        if (get_size_hdr(nxt) + get_size_hdr(oldhdr) >= allocSize) {
+            set_free(nxt, 0);
+            remove_from_freelist(nxt);
+            set_size(oldhdr, get_size_hdr(nxt) + get_size_hdr(oldhdr));
+            split(oldhdr, allocSize);
+            return header_to_payload(oldhdr);
+        }
+    }
     /*
      * Allocate new space, and copy it over.
      */
@@ -432,8 +445,6 @@ void *mm_realloc(void *ptr, size_t newSize)
     if (newPayload == NULL)
       return NULL;
     copySize = payloadSize;
-    if (newSize < copySize)
-        copySize = newSize;
     memcpy(newPayload, ptr, copySize);
     mm_free(ptr);
     return newPayload;
