@@ -1,0 +1,15 @@
+Team Name:team
+Member 1 :Tarushii Goel:tishi.tng@gmail.com
+Measuring performance with a cycle counter.
+Processor clock rate ~= 2592.5 MHz
+
+Testing mm malloc
+Reading tracefile: malloc-traces/binary.rep
+Checking mm_malloc for correctness, efficiency, and performance.
+
+Results for mm malloc:
+trace  valid  util     ops      secs  Kops
+ 0       yes   51%    8000  0.027822   288
+Total          51%    8000  0.027822   288
+
+Perf index = 31 (util) + 12 (thru) = 42/100

@@ -154,10 +154,7 @@ static inline void set_free(header *hdr, size_t free) {
 }
 
 // 3 buckets: small, medium, large
-// small -> 4-100
-// medium -> 104-3000
-// large -> 3004+
-static size_t ranges[2] = {100, 3000};
+static size_t ranges[2] = {118, 488};
 static header* freeListBuckets[3] = {NULL, NULL, NULL};
 /*
  * If you write a HEADER_TO_FOOTER function, it will turn out to be a
@@ -205,16 +202,18 @@ static header* prev(header *hdr){
 static int get_bucket(size_t size) {
     int list_len = sizeof(freeListBuckets) / sizeof(freeListBuckets[0]);
     for (int i = 0; i < list_len - 1; i++) {
-        if (i == 0 && size <= ranges[i])
+        if (i == 0 && size <= ranges[i]) {
             return i;
-        else if (size > ranges[i] && size <= ranges[i+1])
+        }
+        else if (size > ranges[i-1] && size <= ranges[i]) {
             return i;
+        }
     }
     return list_len - 1;
 }
 
 static void add_to_freelist(header *hdr) {
-    header *freeList = freeListBuckets[get_bucket(get_size_hdr(hdr))];
+    header *freeList = freeListBuckets[get_bucket(block_sz_to_payload_sz((hdr)))];
     set_free(hdr, 1);
     // append to the beginning of the list
     if (freeList->next != NULL) {
@@ -384,7 +383,8 @@ void *mm_malloc(size_t size)
      * Once a block that is large enough and is marked free is found, use it. 
     */
     int newsize = payload_sz_to_block_sz(size);
-    header *hdr = freeListBuckets[get_bucket(newsize)];
+    int bucket = get_bucket(size);
+    header *hdr = freeListBuckets[bucket];
     while (hdr->next != NULL && !(get_free(hdr) && newsize <= get_size_hdr(hdr))) {
         hdr = hdr->next;
     }
