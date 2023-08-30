@@ -30,6 +30,23 @@ Total          77%  112372  0.479274   234
 
 Perf index = 46 (util) + 9 (thru) = 55/100
 
+## v2: first-fit with freelist
+trace  valid  util     ops      secs  Kops
+ 0       yes   89%    5694  0.000129 43987
+ 1       yes   90%    5848  0.000082 71741
+ 2       yes   94%    6648  0.000166 39957
+ 3       yes   96%    5380  0.000128 42099
+ 4       yes   99%   14400  0.000065222053
+ 5       yes   90%    4800  0.000416 11533
+ 6       yes   87%    4800  0.000436 11003
+ 7       yes   51%   12000  0.018522   648
+ 8       yes   41%   24000  0.099971   240
+ 9       yes   26%   14401  0.050774   284
+10       yes   30%   14401  0.001569  9180
+Total          72%  112372  0.172258   652
+
+Perf index = 43 (util) + 26 (thru) = 69/100
+
 ## Target speed: libc
 trace  valid  util     ops      secs  Kops
  0       yes    0%    5694  0.000471 12099

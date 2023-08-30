@@ -58,10 +58,15 @@ team_t team = {
  * this header.  You can also use a similar declaration to define a
  * footer, if you choose.
  */
-typedef struct {
+struct header;
+
+typedef struct header header;
+
+struct header {
     size_t size;
-    
-} header;
+    header *prev; // the previous FREE block
+    header *next; // the next FREE block
+};
 
 typedef struct {
     size_t size;
@@ -143,11 +148,13 @@ static inline void set_size(header *hdr, size_t sz) {
     hdr->size = sz | free;
 }
 
-void set_free(header *hdr, size_t free) {
+static inline void set_free(header *hdr, size_t free) {
     size_t sz = get_size_hdr(hdr);
     hdr->size = sz | free;
 }
 
+
+static header* freeList = NULL;
 /*
  * If you write a HEADER_TO_FOOTER function, it will turn out to be a
  * Good Thing if it accepts a size argument.  Remove the #if and #endif
@@ -166,51 +173,74 @@ static inline footer *header_to_footer(header *hdr)
 }
 #endif
 
-header* first() {
+static void update_size(header *hdr, size_t newsize) {
+    assert(newsize >= payload_sz_to_block_sz(ALIGNMENT));
+    set_size(hdr, newsize);
+    header_to_footer(hdr)->size = newsize;
+}
+
+static header* first() {
     if (mem_heap_hi() == mem_heap_lo())
         return NULL;
     else 
         return (header *) mem_heap_lo();
 }
 
-header* next(header *hdr) {
+static header* next(header *hdr) {
     void* nextAddr = (void*)((char *) hdr + get_size_hdr(hdr));
     if (nextAddr >= mem_heap_hi()) 
         return NULL;
     return (header*) nextAddr;
 }
 
-header* prev(header *hdr){
-    if ((void *)hdr <= mem_heap_lo()){
-        return NULL;
-    }
+static header* prev(header *hdr){
     footer *prevFooter = (footer *)((char *)hdr - FOOTER_SIZE);
     return footer_to_header(prevFooter);
 }
 
-void update_size(header *hdr, size_t newsize) {
-    set_size(hdr, newsize);
-    header_to_footer(hdr)->size = newsize;
+static void add_to_freelist(header *hdr) {
+    set_free(hdr, 1);
+    // append to the beginning of the list
+    if (freeList->next != NULL) {
+        freeList->next->prev = hdr;
+    }
+    hdr->next = freeList->next;
+    freeList->next = hdr;
+    hdr->prev = freeList;
+    
 }
 
-void split(header* hdr, size_t newsize) {
+static void remove_from_freelist(header *hdr) {
+    hdr->prev->next = hdr->next;
+    if (hdr->next != NULL) 
+        hdr->next->prev = hdr->prev;
+}
+
+static void split(header* hdr, size_t newsize) {
+    /*
+     * Take an allocated block and crop it to newsize
+     * the remaining portion can be freed
+    */
+    assert(get_free(hdr) == 0); 
     size_t othersize = get_size_hdr(hdr) - newsize;
     if (othersize < payload_sz_to_block_sz(ALIGNMENT)) // block can't even store one byte of data
         return;
     header* otherhdr = (header*) ((char*) hdr + newsize);
     update_size(hdr, newsize);
     update_size(otherhdr, othersize);
-    set_free(otherhdr, 1);
+    add_to_freelist(otherhdr);
 }
 
-void merge(header* hdr) {
+static void merge(header* hdr) {
     header *nextBlock = next(hdr);
     if (nextBlock != NULL && get_free(hdr) && get_free(nextBlock)){
         update_size(hdr, get_size_hdr(hdr) + get_size_hdr(nextBlock));
+        remove_from_freelist(nextBlock);
     }
     header *prevBlock = prev(hdr);
     if (prevBlock != NULL && get_free(hdr) && get_free(prevBlock)){
         update_size(prevBlock, get_size_hdr(hdr) + get_size_hdr(prevBlock));
+        remove_from_freelist(hdr);
     }
 }
 /*
@@ -227,6 +257,77 @@ static inline header *payload_to_header(void *p)
     return (header *)((char *)p - HEADER_SIZE);
 }
 
+#if 0
+#define MM_CHECK() mm_check()
+#else
+#define MM_CHECK()
+#endif
+
+int mm_check(void) {
+    header *hdr = freeList;
+    int i = 0;
+    #define MAX 1e9
+    while (hdr->next != NULL && i++ < MAX) {
+        header *nxt = hdr->next;
+        if (nxt == hdr) {
+            printf("\nLinked list has infinite loop of length 1\n");
+            fflush(stdout);
+            assert(0);
+        }
+        if (nxt->prev != hdr || hdr->next != nxt) {
+            printf("\nLinked list connected corrupted.\n");
+            fflush(stdout);
+            assert(0);
+        }
+        if (get_free(nxt) != 1) {
+            printf("\nBlock on free list isn't free\n");
+            fflush(stdout);
+            assert(0);
+        }
+        hdr = nxt;
+    }
+    if (i >= MAX) {
+        printf("\nLinked list has infinite loop\n");
+        fflush(stdout);
+        assert(0);
+    }
+    hdr = first();
+    if (get_size_hdr(hdr) != payload_sz_to_block_sz(ALIGNMENT) || get_free(hdr) != 0) {
+        printf("\nFirst Block not set correctly.\n");
+        fflush(stdout);
+        assert(0);
+    }
+    while (next(hdr) != NULL) {
+        header *oldhdr = hdr;
+        hdr = next(hdr);
+        if ((char *)oldhdr + get_size_hdr(oldhdr) != (char *)hdr) {
+            printf("Block sizes are not correct. Size should be %d, and is %d\n", (char *)hdr - (char *)oldhdr, oldhdr->size);
+            fflush(stdout);
+            assert(0);
+        }
+        if (align(get_size_hdr(hdr)) != get_size_hdr(hdr)) {
+            printf("Size is not aligned");
+            fflush(stdout);
+            assert(0);
+        }
+        if (hdr->size <= 0) {
+            printf("Block not valid, size is %d, pointer is %p\n", hdr->size, hdr);
+            fflush(stdout);
+            assert(0);
+        }
+        if (hdr->prev == NULL) {
+            printf("Previous block not valid\n");
+            fflush(stdout);
+            assert(0);
+        }
+        if (hdr->prev->size <= ALIGNMENT) {
+            printf("Previous block not valid, size is %d, pointer is %p\n", hdr->prev->size, hdr->prev);
+            fflush(stdout);
+            assert(0);
+        }
+    }
+    return 0;
+}
 /*
  * Actualy memory-allocation functions follow this point.
  */
@@ -236,6 +337,15 @@ static inline header *payload_to_header(void *p)
  */
 int mm_init(void)
 {
+    size_t size = payload_sz_to_block_sz(ALIGNMENT);
+    header *hdr = (header *)mem_sbrk(size);
+    if ((int)hdr == -1)
+        return -1;
+    update_size(hdr, size);
+    set_free(hdr, 0); // It's in the free list, even though, it's allocated? This is weird, but guarantees we can always use it as the head.
+    hdr->prev = NULL;
+    hdr->next = NULL;
+    freeList = hdr;
     return 0;
 }
 
@@ -245,6 +355,7 @@ int mm_init(void)
  */
 void *mm_malloc(size_t size)
 {
+    MM_CHECK();
     if (size == 0)
         return NULL;
 
@@ -253,28 +364,29 @@ void *mm_malloc(size_t size)
      * Once a block that is large enough and is marked free is found, use it. 
     */
     int newsize = payload_sz_to_block_sz(size);
-    header *hdr = first();
-    while (hdr != NULL && !(get_free(hdr) && newsize <= get_size_hdr(hdr))) {
-        hdr = next(hdr);
+    header *hdr = freeList;
+    while (hdr->next != NULL && !(get_free(hdr) && newsize <= get_size_hdr(hdr))) {
+        hdr = hdr->next;
     }
-    if (hdr == NULL) { 
+    if (!(get_free(hdr) && newsize <= get_size_hdr(hdr))) { 
         /* 
          * Did not find anything. 
          */
-        header *hdr = (header *)mem_sbrk(newsize);
-        if ((int)hdr == -1)
+        header *newhdr = (header *)mem_sbrk(newsize);
+        if ((int)newhdr == -1)
             return NULL;
         else {
-            set_size(hdr, newsize);
-            set_free(hdr, 0);
-            footer *ftr = header_to_footer(hdr);
-            ftr->size = newsize;
-            return header_to_payload(hdr);
+            update_size(newhdr, newsize);
+            set_free(newhdr, 0);
+            newhdr->next = NULL; // At the end of the heap. Has no free blocks after it
+            newhdr->prev = hdr;
+            return header_to_payload(newhdr);
         }
 
     } else {
-        split(hdr, newsize);
         set_free(hdr, 0);
+        remove_from_freelist(hdr);
+        split(hdr, newsize);
         return header_to_payload(hdr);
     }
 }
@@ -285,7 +397,7 @@ void *mm_malloc(size_t size)
 void mm_free(void *ptr)
 {   
     header* hdr = payload_to_header(ptr);
-    set_free(hdr, 1);
+    add_to_freelist(hdr);
     merge(hdr);
 }
 
@@ -326,3 +438,4 @@ void *mm_realloc(void *ptr, size_t newSize)
     mm_free(ptr);
     return newPayload;
 }
+
