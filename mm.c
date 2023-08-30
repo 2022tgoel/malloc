@@ -59,9 +59,14 @@ team_t team = {
  * footer, if you choose.
  */
 typedef struct {
-    size_t size;                /* Size of this block, including header */
+    size_t size;
     
 } header;
+
+typedef struct {
+    size_t size;
+    
+} footer;
 
 /*
  * The following inline function generates an expression that rounds
@@ -93,7 +98,7 @@ static inline size_t align(size_t size)
  * carefully.
  */
 #define HEADER_SIZE align(sizeof(header))
-
+#define FOOTER_SIZE align(sizeof(footer))
 /*
  * The following function converts a pointer to a block header into a
  * pointer to its payload.  To do so, it first typecasts the pointer
@@ -113,23 +118,53 @@ static inline void *header_to_payload(header *p)
     return (void *)((char *)p + HEADER_SIZE);
 }
 
-size_t get_size(header *hdr) {
+static inline size_t payload_sz_to_block_sz(size_t sz){
+    return align(sz + HEADER_SIZE + FOOTER_SIZE);
+}
+
+static inline size_t block_sz_to_payload_sz(size_t sz){
+    return sz - HEADER_SIZE - FOOTER_SIZE;
+}
+
+static inline size_t get_size_hdr(header *hdr) {
     return hdr->size & ~1;
 }
 
-size_t get_free(header *hdr) {
+static inline size_t get_size_ftr(footer *ftr) {
+    return ftr->size;
+}
+
+static inline size_t get_free(header *hdr) {
     return hdr->size & 1;
 }
 
-void set_size(header *hdr, size_t sz) {
+static inline void set_size(header *hdr, size_t sz) {
     size_t free = get_free(hdr);
     hdr->size = sz | free;
 }
 
 void set_free(header *hdr, size_t free) {
-    size_t sz = get_size(hdr);
+    size_t sz = get_size_hdr(hdr);
     hdr->size = sz | free;
 }
+
+/*
+ * If you write a HEADER_TO_FOOTER function, it will turn out to be a
+ * Good Thing if it accepts a size argument.  Remove the #if and #endif
+ * to enable this function.
+ */
+
+static inline header *footer_to_header(footer *p) {
+    size_t size = get_size_ftr(p);
+    return (header *)((char *)p + FOOTER_SIZE - size);
+}
+
+#if 1
+static inline footer *header_to_footer(header *hdr)
+{
+    return (footer*)((char *) hdr + get_size_hdr(hdr) - FOOTER_SIZE);
+}
+#endif
 
 header* first() {
     if (mem_heap_hi() == mem_heap_lo())
@@ -139,24 +174,45 @@ header* first() {
 }
 
 header* next(header *hdr) {
-    void* nextAddr = (void*)((char *) hdr + get_size(hdr));
+    void* nextAddr = (void*)((char *) hdr + get_size_hdr(hdr));
     if (nextAddr >= mem_heap_hi()) 
         return NULL;
     return (header*) nextAddr;
 }
 
-/*
- * If you write a HEADER_TO_FOOTER function, it will turn out to be a
- * Good Thing if it accepts a size argument.  Remove the #if and #endif
- * to enable this function.
- */
-#if 0
-static inline footer *header_to_footer(p, size_t size)
-{
-    return (footer*)error: Not written yet;
+header* prev(header *hdr){
+    if ((void *)hdr <= mem_heap_lo()){
+        return NULL;
+    }
+    footer *prevFooter = (footer *)((char *)hdr - FOOTER_SIZE);
+    return footer_to_header(prevFooter);
 }
-#endif
 
+void update_size(header *hdr, size_t newsize) {
+    set_size(hdr, newsize);
+    header_to_footer(hdr)->size = newsize;
+}
+
+void split(header* hdr, size_t newsize) {
+    size_t othersize = get_size_hdr(hdr) - newsize;
+    if (othersize < payload_sz_to_block_sz(ALIGNMENT)) // block can't even store one byte of data
+        return;
+    header* otherhdr = (header*) ((char*) hdr + newsize);
+    update_size(hdr, newsize);
+    update_size(otherhdr, othersize);
+    set_free(otherhdr, 1);
+}
+
+void merge(header* hdr) {
+    header *nextBlock = next(hdr);
+    if (nextBlock != NULL && get_free(hdr) && get_free(nextBlock)){
+        update_size(hdr, get_size_hdr(hdr) + get_size_hdr(nextBlock));
+    }
+    header *prevBlock = prev(hdr);
+    if (prevBlock != NULL && get_free(hdr) && get_free(prevBlock)){
+        update_size(prevBlock, get_size_hdr(hdr) + get_size_hdr(prevBlock));
+    }
+}
 /*
  * The following function is the reverse of header_to_payload.  It takes
  * a pointer to a payload and turns it into a correctly typecast
@@ -196,9 +252,9 @@ void *mm_malloc(size_t size)
      * Simple first-fit scheme. Iterate through all the blocks. 
      * Once a block that is large enough and is marked free is found, use it. 
     */
-    int newsize = align(size + HEADER_SIZE);
+    int newsize = payload_sz_to_block_sz(size);
     header *hdr = first();
-    while (hdr != NULL && !(get_free(hdr) && newsize <= get_size(hdr))) {
+    while (hdr != NULL && !(get_free(hdr) && newsize <= get_size_hdr(hdr))) {
         hdr = next(hdr);
     }
     if (hdr == NULL) { 
@@ -211,10 +267,13 @@ void *mm_malloc(size_t size)
         else {
             set_size(hdr, newsize);
             set_free(hdr, 0);
+            footer *ftr = header_to_footer(hdr);
+            ftr->size = newsize;
             return header_to_payload(hdr);
         }
 
     } else {
+        split(hdr, newsize);
         set_free(hdr, 0);
         return header_to_payload(hdr);
     }
@@ -224,8 +283,10 @@ void *mm_malloc(size_t size)
  * mm_free - Freeing a block does nothing in this allocator.
  */
 void mm_free(void *ptr)
-{
-    set_free(payload_to_header(ptr), 1);
+{   
+    header* hdr = payload_to_header(ptr);
+    set_free(hdr, 1);
+    merge(hdr);
 }
 
 /*
@@ -236,6 +297,7 @@ void *mm_realloc(void *ptr, size_t newSize)
 {
     header *oldhdr = payload_to_header(ptr);
     void *newPayload;
+    size_t payloadSize;
     size_t copySize;
     
     /*
@@ -250,13 +312,14 @@ void *mm_realloc(void *ptr, size_t newSize)
         return mm_malloc(newSize);
     }
 
+    payloadSize = block_sz_to_payload_sz(get_size_hdr(oldhdr));
     /*
      * Allocate new space, and copy it over.
      */
     newPayload = mm_malloc(newSize);
     if (newPayload == NULL)
       return NULL;
-    copySize = get_size(oldhdr) - HEADER_SIZE;
+    copySize = payloadSize;
     if (newSize < copySize)
         copySize = newSize;
     memcpy(newPayload, ptr, copySize);
