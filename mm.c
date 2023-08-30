@@ -153,8 +153,12 @@ static inline void set_free(header *hdr, size_t free) {
     hdr->size = sz | free;
 }
 
-
-static header* freeList = NULL;
+// 3 buckets: small, medium, large
+// small -> 4-100
+// medium -> 104-3000
+// large -> 3004+
+static size_t ranges[2] = {100, 3000};
+static header* freeListBuckets[3] = {NULL, NULL, NULL};
 /*
  * If you write a HEADER_TO_FOOTER function, it will turn out to be a
  * Good Thing if it accepts a size argument.  Remove the #if and #endif
@@ -198,7 +202,19 @@ static header* prev(header *hdr){
     return footer_to_header(prevFooter);
 }
 
+static int get_bucket(size_t size) {
+    int list_len = sizeof(freeListBuckets) / sizeof(freeListBuckets[0]);
+    for (int i = 0; i < list_len - 1; i++) {
+        if (i == 0 && size <= ranges[i])
+            return i;
+        else if (size > ranges[i] && size <= ranges[i+1])
+            return i;
+    }
+    return list_len - 1;
+}
+
 static void add_to_freelist(header *hdr) {
+    header *freeList = freeListBuckets[get_bucket(get_size_hdr(hdr))];
     set_free(hdr, 1);
     // append to the beginning of the list
     if (freeList->next != NULL) {
@@ -264,34 +280,36 @@ static inline header *payload_to_header(void *p)
 #endif
 
 int mm_check(void) {
-    header *hdr = freeList;
-    int i = 0;
-    #define MAX 1e9
-    while (hdr->next != NULL && i++ < MAX) {
-        header *nxt = hdr->next;
-        if (nxt == hdr) {
-            printf("\nLinked list has infinite loop of length 1\n");
+    for (int i = 0; i < 3; i++) {
+        header *hdr = freeListBuckets[i];
+        int i = 0;
+        #define MAX 1e9
+        while (hdr->next != NULL && i++ < MAX) {
+            header *nxt = hdr->next;
+            if (nxt == hdr) {
+                printf("\nLinked list has infinite loop of length 1\n");
+                fflush(stdout);
+                assert(0);
+            }
+            if (nxt->prev != hdr || hdr->next != nxt) {
+                printf("\nLinked list connected corrupted.\n");
+                fflush(stdout);
+                assert(0);
+            }
+            if (get_free(nxt) != 1) {
+                printf("\nBlock on free list isn't free\n");
+                fflush(stdout);
+                assert(0);
+            }
+            hdr = nxt;
+        }
+        if (i >= MAX) {
+            printf("\nLinked list has infinite loop\n");
             fflush(stdout);
             assert(0);
         }
-        if (nxt->prev != hdr || hdr->next != nxt) {
-            printf("\nLinked list connected corrupted.\n");
-            fflush(stdout);
-            assert(0);
-        }
-        if (get_free(nxt) != 1) {
-            printf("\nBlock on free list isn't free\n");
-            fflush(stdout);
-            assert(0);
-        }
-        hdr = nxt;
     }
-    if (i >= MAX) {
-        printf("\nLinked list has infinite loop\n");
-        fflush(stdout);
-        assert(0);
-    }
-    hdr = first();
+    header *hdr = first();
     if (get_size_hdr(hdr) != payload_sz_to_block_sz(ALIGNMENT) || get_free(hdr) != 0) {
         printf("\nFirst Block not set correctly.\n");
         fflush(stdout);
@@ -337,15 +355,17 @@ int mm_check(void) {
  */
 int mm_init(void)
 {
-    size_t size = payload_sz_to_block_sz(ALIGNMENT);
-    header *hdr = (header *)mem_sbrk(size);
-    if ((int)hdr == -1)
-        return -1;
-    update_size(hdr, size);
-    set_free(hdr, 0); // It's in the free list, even though, it's allocated? This is weird, but guarantees we can always use it as the head.
-    hdr->prev = NULL;
-    hdr->next = NULL;
-    freeList = hdr;
+    for (int i = 0; i < 3; i++) {
+        size_t size = payload_sz_to_block_sz(ALIGNMENT);
+        header *hdr = (header *)mem_sbrk(size);
+        if ((int)hdr == -1)
+            return -1;
+        update_size(hdr, size);
+        set_free(hdr, 0); // It's in the free list, even though, it's allocated? This is weird, but guarantees we can always use it as the head.
+        hdr->prev = NULL;
+        hdr->next = NULL;
+        freeListBuckets[i] = hdr;
+    }
     return 0;
 }
 
@@ -364,7 +384,7 @@ void *mm_malloc(size_t size)
      * Once a block that is large enough and is marked free is found, use it. 
     */
     int newsize = payload_sz_to_block_sz(size);
-    header *hdr = freeList;
+    header *hdr = freeListBuckets[get_bucket(newsize)];
     while (hdr->next != NULL && !(get_free(hdr) && newsize <= get_size_hdr(hdr))) {
         hdr = hdr->next;
     }
